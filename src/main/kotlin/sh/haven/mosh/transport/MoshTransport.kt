@@ -48,7 +48,6 @@ class MoshTransport(
     @Volatile private var serverAckedOurNum: Long = 0 // server's ack of our state
     @Volatile private var lastAckSent: Long = 0       // last ack we sent to server
     @Volatile private var lastSendTimeMs: Long = 0
-    @Volatile private var lastAppliedOldNum: Long = -1 // oldNum of last diff we applied
 
     // Track whether we have genuinely new data vs just retransmitting
     @Volatile private var lastSentNewNum: Long = 0
@@ -136,15 +135,21 @@ class MoshTransport(
             retransmitCount = 0 // server got our data, reset backoff
         }
 
-        // Process terminal output if this advances the remote state
+        // Process terminal output if this advances the remote state.
+        //
+        // The diff contains VT100 sequences that transform the display from
+        // the state at oldNum to the state at newNum. These are framebuffer
+        // transforms, not a raw byte stream — applying a diff to the wrong
+        // base state produces invalid VT100 that can hang libvterm's parser.
+        //
+        // Only apply a diff if its base (oldNum) matches our current state.
+        // If we've already advanced past the base, skip it — the server will
+        // send a correctly-based diff once it receives our ack.
         val diff = inst.diff
         if (diff != null && diff.isNotEmpty() && inst.newNum > remoteStateNum) {
-            // The diff contains VT100 sequences to transform the display from
-            // state oldNum to state newNum. If we already applied a diff from
-            // the same base (oldNum), applying another would double-apply the
-            // overlapping output and corrupt the display. Skip it — the server
-            // will send a correctly-based diff once it receives our ack.
-            if (inst.oldNum == lastAppliedOldNum && remoteStateNum > inst.oldNum) {
+            if (inst.oldNum != remoteStateNum) {
+                logger.d(TAG, "Skipping diff based on stale state: " +
+                    "base=${inst.oldNum} ours=${remoteStateNum} new=${inst.newNum}")
                 return
             }
 
@@ -162,7 +167,6 @@ class MoshTransport(
             } catch (e: Exception) {
                 logger.e(TAG, "Failed to decode HostMessage", e)
             }
-            lastAppliedOldNum = inst.oldNum
             remoteStateNum = inst.newNum
         }
     }
