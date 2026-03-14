@@ -14,15 +14,11 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.79")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
-    testImplementation(kotlin("test"))
+    testImplementation("junit:junit:4.13.2")
 }
 
 kotlin {
     jvmToolchain(17)
-}
-
-tasks.test {
-    useJUnitPlatform()
 }
 
 publishing {
