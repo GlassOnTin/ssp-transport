@@ -48,6 +48,7 @@ class MoshTransport(
     @Volatile private var serverAckedOurNum: Long = 0 // server's ack of our state
     @Volatile private var lastAckSent: Long = 0       // last ack we sent to server
     @Volatile private var lastSendTimeMs: Long = 0
+    @Volatile private var lastAppliedOldNum: Long = -1 // oldNum of last diff we applied
 
     // Track whether we have genuinely new data vs just retransmitting
     @Volatile private var lastSentNewNum: Long = 0
@@ -138,6 +139,15 @@ class MoshTransport(
         // Process terminal output if this advances the remote state
         val diff = inst.diff
         if (diff != null && diff.isNotEmpty() && inst.newNum > remoteStateNum) {
+            // The diff contains VT100 sequences to transform the display from
+            // state oldNum to state newNum. If we already applied a diff from
+            // the same base (oldNum), applying another would double-apply the
+            // overlapping output and corrupt the display. Skip it — the server
+            // will send a correctly-based diff once it receives our ack.
+            if (inst.oldNum == lastAppliedOldNum && remoteStateNum > inst.oldNum) {
+                return
+            }
+
             try {
                 val hostMsg = HostMessage.decode(diff)
                 for (hi in hostMsg.instructions) {
@@ -152,6 +162,7 @@ class MoshTransport(
             } catch (e: Exception) {
                 logger.e(TAG, "Failed to decode HostMessage", e)
             }
+            lastAppliedOldNum = inst.oldNum
             remoteStateNum = inst.newNum
         }
     }
