@@ -135,23 +135,26 @@ class MoshTransport(
             retransmitCount = 0 // server got our data, reset backoff
         }
 
-        // Process terminal output if this advances the remote state
-        val diff = inst.diff
-        if (diff != null && diff.isNotEmpty() && inst.newNum > remoteStateNum) {
-
-            try {
-                val hostMsg = HostMessage.decode(diff)
-                for (hi in hostMsg.instructions) {
-                    when (hi) {
-                        is HostInstruction.HostBytes -> {
-                            onOutput(hi.data, 0, hi.data.size)
+        // Always advance remoteStateNum so our acks stay current with the
+        // server. Without this, the server's diff base falls behind and it
+        // keeps sending diffs we can't use, causing a permanent stall.
+        if (inst.newNum > remoteStateNum) {
+            val diff = inst.diff
+            if (diff != null && diff.isNotEmpty()) {
+                try {
+                    val hostMsg = HostMessage.decode(diff)
+                    for (hi in hostMsg.instructions) {
+                        when (hi) {
+                            is HostInstruction.HostBytes -> {
+                                onOutput(hi.data, 0, hi.data.size)
+                            }
+                            is HostInstruction.Resize -> {}
+                            is HostInstruction.EchoAck -> {}
                         }
-                        is HostInstruction.Resize -> {}
-                        is HostInstruction.EchoAck -> {}
                     }
+                } catch (e: Exception) {
+                    logger.e(TAG, "Failed to decode HostMessage", e)
                 }
-            } catch (e: Exception) {
-                logger.e(TAG, "Failed to decode HostMessage", e)
             }
             remoteStateNum = inst.newNum
         }
@@ -213,7 +216,7 @@ class MoshTransport(
                 oldNum = serverAckedOurNum,
                 newNum = currentNum,
                 ackNum = remoteStateNum,
-                throwawayNum = remoteStateNum,
+                throwawayNum = serverAckedOurNum,
                 diff = diff,
             )
             connection?.sendInstruction(instruction) ?: return
