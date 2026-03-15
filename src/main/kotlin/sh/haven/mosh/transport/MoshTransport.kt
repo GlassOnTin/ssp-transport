@@ -53,6 +53,9 @@ class MoshTransport(
     @Volatile private var lastSentNewNum: Long = 0
     @Volatile private var retransmitCount: Int = 0
 
+    // Network roaming detection
+    @Volatile private var lastReceiveTimeMs: Long = 0
+
     // Conflated channel: wakes the send loop immediately when input arrives
     private val inputNotify = Channel<Unit>(Channel.CONFLATED)
 
@@ -116,6 +119,7 @@ class MoshTransport(
                 }
 
                 if (instruction == null) continue // timeout
+                lastReceiveTimeMs = System.currentTimeMillis()
                 processInstruction(instruction)
             }
         } catch (_: CancellationException) {
@@ -172,6 +176,16 @@ class MoshTransport(
                 val hasNewInput = currentNum != lastSentNewNum
                 val hasNewAck = remoteStateNum > lastAckSent
                 val needsRetransmit = currentNum > serverAckedOurNum
+
+                // Detect network stall: no packets received despite sending keepalives.
+                // The UDP socket is likely bound to a defunct interface after IP roaming.
+                // Recreate the socket so it binds to the current default route.
+                val recvAge = now - lastReceiveTimeMs
+                if (lastReceiveTimeMs > 0 && recvAge > NETWORK_STALL_MS) {
+                    logger.d(TAG, "No packets received for ${recvAge}ms, rebinding socket")
+                    connection?.rebindSocket()
+                    lastReceiveTimeMs = now // reset to avoid repeated rebinds
+                }
 
                 when {
                     // New keystrokes: send promptly
@@ -238,6 +252,7 @@ class MoshTransport(
         const val PROTOCOL_VERSION = 2
         const val SEND_MIN_INTERVAL_MS = 20L
         const val ACK_DELAY_MS = 20L
+        const val NETWORK_STALL_MS = 5000L
         const val KEEPALIVE_INTERVAL_MS = 3000L
         const val RECV_TIMEOUT_MS = 250
     }

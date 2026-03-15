@@ -35,7 +35,7 @@ class MoshConnection(
     private val serverAddr = InetAddress.getByName(serverIp)
     private val serverPort = port
     // Use unconnected socket to avoid Android propagating ICMP errors as exceptions
-    private val socket = DatagramSocket()
+    private var socket = DatagramSocket()
 
     private var sendNonceSeq = 0L
     private var fragmentIdCounter = 0
@@ -191,6 +191,16 @@ class MoshConnection(
                 }
             }
         }
+    }
+
+    /**
+     * Recreate the UDP socket to recover from network changes (IP roaming).
+     * The old socket may be bound to a defunct interface; a fresh socket
+     * binds to the current default route.
+     */
+    fun rebindSocket() {
+        try { socket.close() } catch (_: Exception) {}
+        socket = DatagramSocket()
     }
 
     override fun close() {
