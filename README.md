@@ -1,29 +1,30 @@
-# mosh-kotlin
+# ssp-transport
 
-Pure Kotlin implementation of the [mosh](https://mosh.org/) (Mobile Shell) client-side transport protocol for Android and JVM.
+Pure Kotlin implementation of the client-side [State Synchronization Protocol (SSP)](https://mosh.org/mosh-paper.pdf) for Android and JVM. SSP is the UDP-based protocol used by [Mosh](https://mosh.org/) (Mobile Shell) that provides roaming and resilience over unreliable networks.
 
-This library implements the mosh State Synchronization Protocol (SSP) — the UDP-based protocol that gives mosh its roaming and resilience properties. It handles encryption, framing, compression, and state tracking, delivering terminal output (VT100 sequences) via a callback.
+**This project is not affiliated with or endorsed by the Mosh project.** It is an independent implementation of the SSP client transport protocol.
 
-Extracted from [Haven](https://github.com/GlassOnTin/Haven), an Android SSH/mosh client.
+Extracted from [Haven](https://github.com/GlassOnTin/Haven), an Android SSH client.
 
 ## What it does
 
-- **AES-128-OCB encryption** — Authenticated packet encryption matching the [mosh protocol spec](https://mosh.org/mosh-paper.pdf), using Bouncy Castle
+- **AES-128-OCB encryption** — Authenticated packet encryption per the SSP protocol spec
 - **UDP transport** — Packet framing with timestamps, fragment reassembly, and zlib compression
 - **SSP state machine** — Keepalive, retransmit with exponential backoff, ack tracking
-- **Protobuf wire format** — Minimal encoder/decoder for mosh's protobuf messages (no protobuf dependency)
-- **Coroutine-based** — Send/receive loops run on `Dispatchers.IO`, instant wake on input via conflated channel
+- **Protobuf wire format** — Encoder/decoder for SSP transport messages
+- **Network roaming** — Detects stalled connections and rebinds the UDP socket for IP changes
+- **Coroutine-based** — Send/receive loops run on `Dispatchers.IO`, instant wake on input
 
 ## What it doesn't do
 
 This is a **client-side transport only**. It does not include:
 
 - SSH bootstrapping (connecting to the server, running `mosh-server new`, parsing `MOSH CONNECT`)
-- Terminal emulation (use [termlib](https://github.com/connectbot/termlib), [termux-terminal-emulator](https://github.com/nickoala/nickoala-terminal), etc.)
-- A mosh server implementation
-- Local echo / prediction (the C++ mosh client's prediction engine)
+- Terminal emulation (use [termlib](https://github.com/connectbot/termlib), etc.)
+- A server implementation
+- Local echo / prediction
 
-You need an SSH client to start `mosh-server` on the remote host, parse the `MOSH CONNECT <port> <key>` response, then pass those to `MoshTransport`.
+You need an SSH client to start `mosh-server` on the remote host, parse the `MOSH CONNECT <port> <key>` response, then pass those to `SspTransport`.
 
 ## Usage
 
@@ -68,33 +69,14 @@ MoshTransport          SSP state machine, send/receive coroutine loops
   ├── MoshConnection   UDP socket, packet encryption, zlib, fragmentation
   │     └── MoshCrypto AES-128-OCB encrypt/decrypt
   ├── UserStream       Client input state tracking and diff computation
-  └── WireFormat       Protobuf encode/decode for mosh messages
+  └── WireFormat       Protobuf encode/decode for SSP messages
 ```
-
-| Component | File | Description |
-|-----------|------|-------------|
-| `MoshTransport` | `transport/MoshTransport.kt` | Top-level API. Manages coroutine loops, SSP state, keepalive, retransmit backoff |
-| `MoshConnection` | `network/MoshConnection.kt` | UDP I/O with packet encryption, timestamps, zlib compression, fragment reassembly |
-| `MoshCrypto` | `crypto/MoshCrypto.kt` | AES-128-OCB via Bouncy Castle. Handles nonce encoding with direction bits |
-| `UserStream` | `transport/UserStream.kt` | Accumulates keystrokes and resize events, computes state diffs |
-| `WireFormat` | `proto/WireFormat.kt` | Minimal protobuf codec for `TransportInstruction`, `UserMessage`, `HostMessage` |
-| `MoshLogger` | `MoshLogger.kt` | Logging interface — implement to bridge to your platform's logger |
 
 ## Protocol reference
 
-The mosh protocol is described in:
+The SSP protocol is described in:
 
-- [Mosh: An Interactive Remote Shell for Mobile Users](https://mosh.org/mosh-paper.pdf) (USENIX ATC '12)
-- [mosh source code](https://github.com/mobile-shell/mosh) (C++ reference implementation)
-- [mosh protocol documentation](https://mosh.org/#techinfo)
-
-Key protocol details implemented here:
-
-- **Packet format**: `[8-byte nonce][AES-128-OCB(plaintext + 16-byte tag)]`
-- **Plaintext format**: `[2-byte timestamp][2-byte timestamp_reply][fragment data]`
-- **Fragment format**: `[8-byte fragment_id][2-byte flags+num][zlib-compressed protobuf]`
-- **Nonce encoding**: High bit = direction (0 = client→server, 1 = server→client), low 63 bits = sequence number
-- **SSP**: Each side maintains a numbered state. Diffs are sent referencing the last acknowledged state. Receiver applies diffs to advance state.
+- [Mosh: An Interactive Remote Shell for Mobile Users](https://mosh.org/mosh-paper.pdf) (USENIX ATC '12) — Keith Winstein and Hari Balakrishnan
 
 ## Dependencies
 
@@ -103,6 +85,6 @@ Key protocol details implemented here:
 
 ## License
 
-Apache License 2.0
+GPLv3 — see [LICENSE](LICENSE).
 
-The [mosh project](https://github.com/mobile-shell/mosh) is licensed under GPLv3. This is an independent reimplementation of the client-side protocol, not a derivative work of the C++ source code.
+This is a derivative work of the [Mosh](https://github.com/mobile-shell/mosh) protocol (GPLv3, Copyright Keith Winstein and others).

@@ -32,19 +32,19 @@ publishing {
     publications {
         create<MavenPublication>("maven") {
             from(components["java"])
-            artifactId = "mosh-transport"
+            artifactId = "ssp-transport"
             pom {
-                name.set("mosh-kotlin")
-                description.set("Pure Kotlin mosh (Mobile Shell) client transport for Android/JVM")
-                url.set("https://github.com/GlassOnTin/mosh-kotlin")
+                name.set("ssp-transport")
+                description.set("Pure Kotlin SSP (State Synchronization Protocol) client transport for Android/JVM")
+                url.set("https://github.com/GlassOnTin/ssp-transport")
                 licenses {
                     license {
-                        name.set("The Apache License, Version 2.0")
-                        url.set("https://www.apache.org/licenses/LICENSE-2.0")
+                        name.set("GNU General Public License v3.0")
+                        url.set("https://www.gnu.org/licenses/gpl-3.0.html")
                     }
                 }
                 scm {
-                    url.set("https://github.com/GlassOnTin/mosh-kotlin")
+                    url.set("https://github.com/GlassOnTin/ssp-transport")
                 }
             }
         }
