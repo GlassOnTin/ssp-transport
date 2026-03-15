@@ -8,13 +8,13 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import com.google.protobuf.ExtensionRegistryLite
 import sh.haven.mosh.MoshLogger
 import sh.haven.mosh.NoOpLogger
 import sh.haven.mosh.crypto.MoshCrypto
 import sh.haven.mosh.network.MoshConnection
-import sh.haven.mosh.proto.HostInstruction
-import sh.haven.mosh.proto.HostMessage
-import sh.haven.mosh.proto.TransportInstruction
+import sh.haven.mosh.proto.Hostinput
+import sh.haven.mosh.proto.Transportinstruction.Instruction as TransportInstruction
 import java.io.Closeable
 
 private const val TAG = "MoshTransport"
@@ -39,6 +39,9 @@ class MoshTransport(
 
     private val crypto = MoshCrypto(key)
     private val userStream = UserStream()
+    private val extensionRegistry = ExtensionRegistryLite.newInstance().also {
+        Hostinput.registerAllExtensions(it)
+    }
 
     // Connection created on IO thread in start() to avoid main-thread network StrictMode
     @Volatile private var connection: MoshConnection? = null
@@ -144,16 +147,14 @@ class MoshTransport(
         // keeps sending diffs we can't use, causing a permanent stall.
         if (inst.newNum > remoteStateNum) {
             val diff = inst.diff
-            if (diff != null && diff.isNotEmpty()) {
+            if (diff != null && !diff.isEmpty) {
                 try {
-                    val hostMsg = HostMessage.decode(diff)
-                    for (hi in hostMsg.instructions) {
-                        when (hi) {
-                            is HostInstruction.HostBytes -> {
-                                onOutput(hi.data, 0, hi.data.size)
-                            }
-                            is HostInstruction.Resize -> {}
-                            is HostInstruction.EchoAck -> {}
+                    val hostMsg = Hostinput.HostMessage.parseFrom(diff, extensionRegistry)
+                    for (hi in hostMsg.instructionList) {
+                        if (hi.hasExtension(Hostinput.hostbytes)) {
+                            val hb = hi.getExtension(Hostinput.hostbytes)
+                            val bytes = hb.hoststring.toByteArray()
+                            onOutput(bytes, 0, bytes.size)
                         }
                     }
                 } catch (e: Exception) {
@@ -225,14 +226,14 @@ class MoshTransport(
         try {
             val currentNum = userStream.size
             val diff = userStream.diffFrom(serverAckedOurNum)
-            val instruction = TransportInstruction(
-                protocolVersion = PROTOCOL_VERSION,
-                oldNum = serverAckedOurNum,
-                newNum = currentNum,
-                ackNum = remoteStateNum,
-                throwawayNum = serverAckedOurNum,
-                diff = diff,
-            )
+            val instruction = TransportInstruction.newBuilder()
+                .setProtocolVersion(PROTOCOL_VERSION)
+                .setOldNum(serverAckedOurNum)
+                .setNewNum(currentNum)
+                .setAckNum(remoteStateNum)
+                .setThrowawayNum(serverAckedOurNum)
+                .setDiff(com.google.protobuf.ByteString.copyFrom(diff))
+                .build()
             connection?.sendInstruction(instruction) ?: return
             lastSendTimeMs = System.currentTimeMillis()
             lastAckSent = remoteStateNum

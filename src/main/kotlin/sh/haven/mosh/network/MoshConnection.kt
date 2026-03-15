@@ -5,7 +5,7 @@ import sh.haven.mosh.crypto.MoshCrypto.Companion.DIRECTION_TO_CLIENT
 import sh.haven.mosh.crypto.MoshCrypto.Companion.DIRECTION_TO_SERVER
 import sh.haven.mosh.crypto.MoshCrypto.Companion.getBE64
 import sh.haven.mosh.crypto.MoshCrypto.Companion.putBE64
-import sh.haven.mosh.proto.TransportInstruction
+import sh.haven.mosh.proto.Transportinstruction.Instruction as TransportInstruction
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.net.DatagramPacket
@@ -66,7 +66,7 @@ class MoshConnection(
      * Send a TransportInstruction, compressing and fragmenting as needed.
      */
     fun sendInstruction(instruction: TransportInstruction) {
-        val serialized = instruction.encode()
+        val serialized = instruction.toByteArray()
         val payload = zlibCompress(serialized)
         val fragId = (fragmentIdCounter++).toLong() and 0xFFFFL
 
@@ -158,7 +158,7 @@ class MoshConnection(
             if (isFinal && fragmentNum == 0) {
                 return try {
                     val decompressed = zlibDecompress(fragPayload)
-                    TransportInstruction.decode(decompressed)
+                    TransportInstruction.parseFrom(decompressed)
                 } catch (_: Exception) {
                     continue
                 }
@@ -185,7 +185,7 @@ class MoshConnection(
                 }
                 return try {
                     val decompressed = zlibDecompress(full.toByteArray())
-                    TransportInstruction.decode(decompressed)
+                    TransportInstruction.parseFrom(decompressed)
                 } catch (_: Exception) {
                     continue
                 }

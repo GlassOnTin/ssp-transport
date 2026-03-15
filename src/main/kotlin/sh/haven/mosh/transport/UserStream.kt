@@ -1,7 +1,7 @@
 package sh.haven.mosh.transport
 
-import sh.haven.mosh.proto.UserInstruction
-import sh.haven.mosh.proto.UserMessage
+import com.google.protobuf.ByteString
+import sh.haven.mosh.proto.Userinput
 
 /**
  * Client-side state for the State Synchronization Protocol.
@@ -10,7 +10,12 @@ import sh.haven.mosh.proto.UserMessage
  * diffs between state versions. Each action increments the state number.
  */
 class UserStream {
-    private val actions = mutableListOf<UserInstruction>()
+    private sealed class Action {
+        data class Keystroke(val key: ByteArray) : Action()
+        data class Resize(val width: Int, val height: Int) : Action()
+    }
+
+    private val actions = mutableListOf<Action>()
 
     val size: Long
         get() = synchronized(this) { actions.size.toLong() }
@@ -19,14 +24,14 @@ class UserStream {
         synchronized(this) {
             // Each byte is a separate UserEvent, matching mosh's C++ client behavior
             for (b in bytes) {
-                actions.add(UserInstruction.Keystroke(byteArrayOf(b)))
+                actions.add(Action.Keystroke(byteArrayOf(b)))
             }
         }
     }
 
     fun pushResize(width: Int, height: Int) {
         synchronized(this) {
-            actions.add(UserInstruction.Resize(width, height))
+            actions.add(Action.Resize(width, height))
         }
     }
 
@@ -41,7 +46,28 @@ class UserStream {
             } else {
                 emptyList()
             }
-            return UserMessage(newActions).encode()
+
+            val msg = Userinput.UserMessage.newBuilder()
+            for (action in newActions) {
+                val inst = Userinput.Instruction.newBuilder()
+                when (action) {
+                    is Action.Keystroke -> {
+                        val ks = Userinput.Keystroke.newBuilder()
+                            .setKeys(ByteString.copyFrom(action.key))
+                            .build()
+                        inst.setExtension(Userinput.keystroke, ks)
+                    }
+                    is Action.Resize -> {
+                        val rs = Userinput.ResizeMessage.newBuilder()
+                            .setWidth(action.width)
+                            .setHeight(action.height)
+                            .build()
+                        inst.setExtension(Userinput.resize, rs)
+                    }
+                }
+                msg.addInstruction(inst.build())
+            }
+            return msg.build().toByteArray()
         }
     }
 }

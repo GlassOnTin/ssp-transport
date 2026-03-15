@@ -1,153 +1,156 @@
 package sh.haven.mosh
 
+import com.google.protobuf.ByteString
+import com.google.protobuf.ExtensionRegistryLite
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import sh.haven.mosh.proto.HostInstruction
-import sh.haven.mosh.proto.HostMessage
-import sh.haven.mosh.proto.TransportInstruction
-import sh.haven.mosh.proto.UserInstruction
-import sh.haven.mosh.proto.UserMessage
+import sh.haven.mosh.proto.Hostinput
+import sh.haven.mosh.proto.Transportinstruction
+import sh.haven.mosh.proto.Userinput
 
 class WireFormatTest {
 
+    private val registry = ExtensionRegistryLite.newInstance().also {
+        Userinput.registerAllExtensions(it)
+        Hostinput.registerAllExtensions(it)
+    }
+
     @Test
     fun `TransportInstruction roundtrip`() {
-        val original = TransportInstruction(
-            protocolVersion = 2,
-            oldNum = 100,
-            newNum = 200,
-            ackNum = 50,
-            throwawayNum = 25,
-            diff = byteArrayOf(1, 2, 3, 4),
-        )
+        val original = Transportinstruction.Instruction.newBuilder()
+            .setProtocolVersion(2)
+            .setOldNum(100)
+            .setNewNum(200)
+            .setAckNum(50)
+            .setThrowawayNum(25)
+            .setDiff(ByteString.copyFrom(byteArrayOf(1, 2, 3, 4)))
+            .build()
 
-        val encoded = original.encode()
-        val decoded = TransportInstruction.decode(encoded)
+        val decoded = Transportinstruction.Instruction.parseFrom(original.toByteArray())
 
         assertEquals(original.protocolVersion, decoded.protocolVersion)
         assertEquals(original.oldNum, decoded.oldNum)
         assertEquals(original.newNum, decoded.newNum)
         assertEquals(original.ackNum, decoded.ackNum)
         assertEquals(original.throwawayNum, decoded.throwawayNum)
-        assertArrayEquals(original.diff, decoded.diff)
+        assertArrayEquals(original.diff.toByteArray(), decoded.diff.toByteArray())
     }
 
     @Test
     fun `TransportInstruction with no diff`() {
-        val original = TransportInstruction(
-            protocolVersion = 2,
-            oldNum = 0,
-            newNum = 0,
-            ackNum = 0,
-        )
+        val original = Transportinstruction.Instruction.newBuilder()
+            .setProtocolVersion(2)
+            .setOldNum(0)
+            .setNewNum(0)
+            .setAckNum(0)
+            .build()
 
-        val encoded = original.encode()
-        val decoded = TransportInstruction.decode(encoded)
+        val decoded = Transportinstruction.Instruction.parseFrom(original.toByteArray())
 
         assertEquals(2, decoded.protocolVersion)
         assertEquals(0L, decoded.oldNum)
-        assertNull(decoded.diff)
+        assertTrue(!decoded.hasDiff())
     }
 
     @Test
     fun `UserMessage with keystroke`() {
-        val msg = UserMessage(
-            listOf(UserInstruction.Keystroke("hello".toByteArray()))
-        )
-        val encoded = msg.encode()
+        val ks = Userinput.Keystroke.newBuilder()
+            .setKeys(ByteString.copyFromUtf8("hello"))
+            .build()
+        val inst = Userinput.Instruction.newBuilder()
+            .setExtension(Userinput.keystroke, ks)
+            .build()
+        val msg = Userinput.UserMessage.newBuilder()
+            .addInstruction(inst)
+            .build()
+
+        val encoded = msg.toByteArray()
         assertTrue(encoded.isNotEmpty())
 
-        // Verify it's valid protobuf by checking it starts with the right tag
-        // Tag for field 1, wire type 2 (LEN) = (1 << 3) | 2 = 0x0A
-        assertEquals(0x0A.toByte(), encoded[0])
+        val decoded = Userinput.UserMessage.parseFrom(encoded, registry)
+        assertEquals(1, decoded.instructionCount)
+        assertTrue(decoded.getInstruction(0).hasExtension(Userinput.keystroke))
+        assertEquals("hello",
+            decoded.getInstruction(0).getExtension(Userinput.keystroke).keys.toStringUtf8())
     }
 
     @Test
     fun `UserMessage with resize`() {
-        val msg = UserMessage(
-            listOf(UserInstruction.Resize(80, 24))
-        )
-        val encoded = msg.encode()
-        assertTrue(encoded.isNotEmpty())
-    }
+        val rs = Userinput.ResizeMessage.newBuilder()
+            .setWidth(80)
+            .setHeight(24)
+            .build()
+        val inst = Userinput.Instruction.newBuilder()
+            .setExtension(Userinput.resize, rs)
+            .build()
+        val msg = Userinput.UserMessage.newBuilder()
+            .addInstruction(inst)
+            .build()
 
-    @Test
-    fun `UserMessage with multiple instructions`() {
-        val msg = UserMessage(listOf(
-            UserInstruction.Keystroke("a".toByteArray()),
-            UserInstruction.Keystroke("b".toByteArray()),
-            UserInstruction.Resize(132, 43),
-            UserInstruction.Keystroke("c".toByteArray()),
-        ))
-        val encoded = msg.encode()
+        val encoded = msg.toByteArray()
         assertTrue(encoded.isNotEmpty())
+
+        val decoded = Userinput.UserMessage.parseFrom(encoded, registry)
+        val decodedResize = decoded.getInstruction(0).getExtension(Userinput.resize)
+        assertEquals(80, decodedResize.width)
+        assertEquals(24, decodedResize.height)
     }
 
     @Test
     fun `HostMessage decode with HostBytes`() {
-        // Manually encode a HostMessage with a single HostBytes instruction
-        // HostMessage { instruction[1] { hostbytes[2] { hoststring[4] = "hello" } } }
-        val hoststring = "hello".toByteArray()
+        val hb = Hostinput.HostBytes.newBuilder()
+            .setHoststring(ByteString.copyFromUtf8("hello"))
+            .build()
+        val inst = Hostinput.Instruction.newBuilder()
+            .setExtension(Hostinput.hostbytes, hb)
+            .build()
+        val msg = Hostinput.HostMessage.newBuilder()
+            .addInstruction(inst)
+            .build()
 
-        // Inner: HostBytes { hoststring = 4: "hello" }
-        // Tag(4, LEN) = (4 << 3) | 2 = 0x22
-        val hbInner = byteArrayOf(0x22, hoststring.size.toByte()) + hoststring
-
-        // Mid: Instruction { hostbytes = 2: hbInner }
-        // Tag(2, LEN) = (2 << 3) | 2 = 0x12
-        val instInner = byteArrayOf(0x12, hbInner.size.toByte()) + hbInner
-
-        // Outer: HostMessage { instruction = 1: instInner }
-        // Tag(1, LEN) = (1 << 3) | 2 = 0x0A
-        val msgBytes = byteArrayOf(0x0A, instInner.size.toByte()) + instInner
-
-        val decoded = HostMessage.decode(msgBytes)
-        assertEquals(1, decoded.instructions.size)
-        val inst = decoded.instructions[0]
-        assertTrue(inst is HostInstruction.HostBytes)
-        assertArrayEquals(hoststring, (inst as HostInstruction.HostBytes).data)
+        val decoded = Hostinput.HostMessage.parseFrom(msg.toByteArray(), registry)
+        assertEquals(1, decoded.instructionCount)
+        assertTrue(decoded.getInstruction(0).hasExtension(Hostinput.hostbytes))
+        assertEquals("hello",
+            decoded.getInstruction(0).getExtension(Hostinput.hostbytes).hoststring.toStringUtf8())
     }
 
     @Test
     fun `HostMessage decode with EchoAck`() {
-        // EchoAck { echo_ack_num = 8: 42 }
-        // Tag(8, VARINT) = (8 << 3) | 0 = 0x40
-        val eaInner = byteArrayOf(0x40, 42)
+        val ea = Hostinput.EchoAck.newBuilder()
+            .setEchoAckNum(42)
+            .build()
+        val inst = Hostinput.Instruction.newBuilder()
+            .setExtension(Hostinput.echoack, ea)
+            .build()
+        val msg = Hostinput.HostMessage.newBuilder()
+            .addInstruction(inst)
+            .build()
 
-        // Instruction { echoack = 7: eaInner }
-        // Tag(7, LEN) = (7 << 3) | 2 = 0x3A
-        val instInner = byteArrayOf(0x3A, eaInner.size.toByte()) + eaInner
-
-        // HostMessage { instruction = 1: instInner }
-        val msgBytes = byteArrayOf(0x0A, instInner.size.toByte()) + instInner
-
-        val decoded = HostMessage.decode(msgBytes)
-        assertEquals(1, decoded.instructions.size)
-        val inst = decoded.instructions[0]
-        assertTrue(inst is HostInstruction.EchoAck)
-        assertEquals(42L, (inst as HostInstruction.EchoAck).echoAckNum)
+        val decoded = Hostinput.HostMessage.parseFrom(msg.toByteArray(), registry)
+        assertEquals(42L,
+            decoded.getInstruction(0).getExtension(Hostinput.echoack).echoAckNum)
     }
 
     @Test
     fun `HostMessage decode empty message`() {
-        val decoded = HostMessage.decode(ByteArray(0))
-        assertTrue(decoded.instructions.isEmpty())
+        val msg = Hostinput.HostMessage.newBuilder().build()
+        val decoded = Hostinput.HostMessage.parseFrom(msg.toByteArray(), registry)
+        assertEquals(0, decoded.instructionCount)
     }
 
     @Test
     fun `TransportInstruction large values`() {
-        val original = TransportInstruction(
-            protocolVersion = 2,
-            oldNum = Long.MAX_VALUE,
-            newNum = Long.MAX_VALUE - 1,
-            ackNum = 0xFFFF_FFFFL,
-        )
+        val original = Transportinstruction.Instruction.newBuilder()
+            .setProtocolVersion(2)
+            .setOldNum(Long.MAX_VALUE)
+            .setNewNum(Long.MAX_VALUE - 1)
+            .setAckNum(0xFFFF_FFFFL)
+            .build()
 
-        val decoded = TransportInstruction.decode(original.encode())
+        val decoded = Transportinstruction.Instruction.parseFrom(original.toByteArray())
         assertEquals(original.oldNum, decoded.oldNum)
         assertEquals(original.newNum, decoded.newNum)
         assertEquals(original.ackNum, decoded.ackNum)

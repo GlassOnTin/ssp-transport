@@ -1,5 +1,6 @@
 plugins {
     kotlin("jvm") version "2.0.21"
+    id("com.google.protobuf") version "0.9.4"
     `maven-publish`
 }
 
@@ -13,8 +14,24 @@ repositories {
 dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.79")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+    implementation("com.google.protobuf:protobuf-javalite:4.29.3")
 
     testImplementation("junit:junit:4.13.2")
+}
+
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:4.29.3"
+    }
+    generateProtoTasks {
+        all().forEach { task ->
+            task.builtins {
+                named("java") {
+                    option("lite")
+                }
+            }
+        }
+    }
 }
 
 java {

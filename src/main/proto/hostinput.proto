@@ -1,0 +1,37 @@
+// From https://github.com/mobile-shell/mosh/blob/main/src/protobufs/hostinput.proto
+// Copyright 2012 Keith Winstein
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+syntax = "proto2";
+
+option optimize_for = LITE_RUNTIME;
+option java_package = "sh.haven.mosh.proto";
+
+package HostBuffers;
+
+message HostMessage {
+  repeated Instruction instruction = 1;
+}
+
+message Instruction {
+  extensions 2 to max;
+}
+
+message HostBytes {
+  optional bytes hoststring = 4;
+}
+
+message ResizeMessage {
+  optional int32 width = 5;
+  optional int32 height = 6;
+}
+
+message EchoAck {
+  optional uint64 echo_ack_num = 8;
+}
+
+extend Instruction {
+  optional HostBytes hostbytes = 2;
+  optional ResizeMessage resize = 3;
+  optional EchoAck echoack = 7;
+}
