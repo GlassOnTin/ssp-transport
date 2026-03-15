@@ -135,23 +135,9 @@ class MoshTransport(
             retransmitCount = 0 // server got our data, reset backoff
         }
 
-        // Process terminal output if this advances the remote state.
-        //
-        // The diff contains VT100 sequences that transform the display from
-        // the state at oldNum to the state at newNum. These are framebuffer
-        // transforms, not a raw byte stream — applying a diff to the wrong
-        // base state produces invalid VT100 that can hang libvterm's parser.
-        //
-        // Only apply a diff if its base (oldNum) matches our current state.
-        // If we've already advanced past the base, skip it — the server will
-        // send a correctly-based diff once it receives our ack.
+        // Process terminal output if this advances the remote state
         val diff = inst.diff
         if (diff != null && diff.isNotEmpty() && inst.newNum > remoteStateNum) {
-            if (inst.oldNum != remoteStateNum) {
-                logger.d(TAG, "Skipping diff based on stale state: " +
-                    "base=${inst.oldNum} ours=${remoteStateNum} new=${inst.newNum}")
-                return
-            }
 
             try {
                 val hostMsg = HostMessage.decode(diff)
@@ -227,7 +213,7 @@ class MoshTransport(
                 oldNum = serverAckedOurNum,
                 newNum = currentNum,
                 ackNum = remoteStateNum,
-                throwawayNum = serverAckedOurNum,
+                throwawayNum = remoteStateNum,
                 diff = diff,
             )
             connection?.sendInstruction(instruction) ?: return
