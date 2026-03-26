@@ -35,6 +35,8 @@ class MoshTransport(
     private val onOutput: (ByteArray, Int, Int) -> Unit,
     private val onDisconnect: ((cleanExit: Boolean) -> Unit)? = null,
     private val logger: MoshLogger = NoOpLogger,
+    private val initialCols: Int = 80,
+    private val initialRows: Int = 24,
 ) : Closeable {
 
     private val crypto = MoshCrypto(key)
@@ -80,6 +82,11 @@ class MoshTransport(
                 onDisconnect?.invoke(false)
                 return@launch
             }
+            // Send initial resize — mosh-server waits for a client state change
+            // (newNum > 0) before releasing the child shell process
+            userStream.pushResize(initialCols, initialRows)
+            logger.d(TAG, "Queued initial resize ${initialCols}x${initialRows}")
+
             // Only one coroutine sends — no race on nonce counter
             receiveJob = launch { receiveLoop() }
             sendJob = launch { sendLoop() }
@@ -146,10 +153,9 @@ class MoshTransport(
         // server. Without this, the server's diff base falls behind and it
         // keeps sending diffs we can't use, causing a permanent stall.
         if (inst.newNum > remoteStateNum) {
-            val diff = inst.diff
-            if (diff != null && !diff.isEmpty) {
+            if (inst.hasDiff() && !inst.diff.isEmpty) {
                 try {
-                    val hostMsg = Hostinput.HostMessage.parseFrom(diff, extensionRegistry)
+                    val hostMsg = Hostinput.HostMessage.parseFrom(inst.diff, extensionRegistry)
                     for (hi in hostMsg.instructionList) {
                         if (hi.hasExtension(Hostinput.hostbytes)) {
                             val hb = hi.getExtension(Hostinput.hostbytes)
@@ -160,6 +166,8 @@ class MoshTransport(
                 } catch (e: Exception) {
                     logger.e(TAG, "Failed to decode HostMessage", e)
                 }
+            } else {
+                logger.d(TAG, "Instruction newNum=${inst.newNum} has no diff (state advance only)")
             }
             remoteStateNum = inst.newNum
         }
