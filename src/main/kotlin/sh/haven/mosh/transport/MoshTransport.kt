@@ -101,7 +101,9 @@ class MoshTransport(
     /** Enqueue user keystrokes for delivery to the server. */
     fun sendInput(data: ByteArray) {
         if (closed) return
+        val prevSize = userStream.size
         userStream.pushKeystroke(data)
+        logger.d(TAG, "sendInput: ${data.size} bytes, userStream ${prevSize}→${userStream.size}")
         inputNotify.trySend(Unit)
     }
 
@@ -158,31 +160,39 @@ class MoshTransport(
             logger.d(TAG, "Server acked our state: $oldAck → ${inst.ackNum}")
         }
 
-        // Always advance remoteStateNum so our acks stay current with the
-        // server. Without this, the server's diff base falls behind and it
-        // keeps sending diffs we can't use, causing a permanent stall.
+        // Only apply diffs whose base matches our current state. The server's
+        // diff is a visual framebuffer update computed from oldNum → newNum using
+        // VT100 sequences. If we've already advanced past oldNum, applying the
+        // diff would re-write characters that are already on screen (doubling).
+        // The server will resend with the correct base once it receives our ack.
         if (inst.newNum > remoteStateNum) {
-            if (inst.hasDiff() && !inst.diff.isEmpty) {
-                if (!firstOutputReceived) {
-                    firstOutputReceived = true
-                    logger.d(TAG, "First terminal output received (newNum=${inst.newNum}, diffSize=${inst.diff.size()}, packets sent=$packetsSent received=$packetsReceived)")
-                }
-                try {
-                    val hostMsg = Hostinput.HostMessage.parseFrom(inst.diff, extensionRegistry)
-                    for (hi in hostMsg.instructionList) {
-                        if (hi.hasExtension(Hostinput.hostbytes)) {
-                            val hb = hi.getExtension(Hostinput.hostbytes)
-                            val bytes = hb.hoststring.toByteArray()
-                            onOutput(bytes, 0, bytes.size)
-                        }
+            if (inst.oldNum == remoteStateNum) {
+                if (inst.hasDiff() && !inst.diff.isEmpty) {
+                    if (!firstOutputReceived) {
+                        firstOutputReceived = true
+                        logger.d(TAG, "First terminal output received (newNum=${inst.newNum}, diffSize=${inst.diff.size()}, packets sent=$packetsSent received=$packetsReceived)")
                     }
-                } catch (e: Exception) {
-                    logger.e(TAG, "Failed to decode HostMessage", e)
+                    try {
+                        val hostMsg = Hostinput.HostMessage.parseFrom(inst.diff, extensionRegistry)
+                        for (hi in hostMsg.instructionList) {
+                            if (hi.hasExtension(Hostinput.hostbytes)) {
+                                val hb = hi.getExtension(Hostinput.hostbytes)
+                                val bytes = hb.hoststring.toByteArray()
+                                onOutput(bytes, 0, bytes.size)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        logger.e(TAG, "Failed to decode HostMessage", e)
+                    }
                 }
+                remoteStateNum = inst.newNum
             } else {
-                logger.d(TAG, "Instruction newNum=${inst.newNum} has no diff (state advance only)")
+                // Base mismatch — skip diff but still advance state number so
+                // our acks tell the server where we are. The server will send
+                // a fresh diff from the correct base.
+                logger.d(TAG, "Skipping diff: oldNum=${inst.oldNum} ≠ remoteStateNum=$remoteStateNum (newNum=${inst.newNum})")
+                remoteStateNum = inst.newNum
             }
-            remoteStateNum = inst.newNum
         }
     }
 
@@ -257,8 +267,9 @@ class MoshTransport(
                 .build()
             connection?.sendInstruction(instruction) ?: return
             packetsSent++
-            if (packetsSent == 1L) {
-                logger.d(TAG, "Sent initial packet: newNum=$currentNum ackNum=$remoteStateNum diffSize=${diff.size}")
+            val isRetransmit = currentNum == lastSentNewNum && currentNum > serverAckedOurNum
+            if (packetsSent <= 3L || diff.isNotEmpty()) {
+                logger.d(TAG, "sendState #$packetsSent: oldNum=$serverAckedOurNum newNum=$currentNum ackNum=$remoteStateNum diffSize=${diff.size}${if (isRetransmit) " RETRANSMIT" else ""}")
             }
             lastSendTimeMs = System.currentTimeMillis()
             lastAckSent = remoteStateNum
