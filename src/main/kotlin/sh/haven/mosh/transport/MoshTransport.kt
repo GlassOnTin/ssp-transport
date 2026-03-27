@@ -58,6 +58,11 @@ class MoshTransport(
     @Volatile private var lastSentNewNum: Long = 0
     @Volatile private var retransmitCount: Int = 0
 
+    // Diagnostic counters
+    @Volatile private var packetsSent: Long = 0
+    @Volatile private var packetsReceived: Long = 0
+    @Volatile private var firstOutputReceived: Boolean = false
+
     // Network roaming detection
     @Volatile private var lastReceiveTimeMs: Long = 0
 
@@ -143,10 +148,14 @@ class MoshTransport(
     }
 
     private fun processInstruction(inst: TransportInstruction) {
+        packetsReceived++
+
         // Update server's acknowledgement of our state
         if (inst.ackNum > serverAckedOurNum) {
+            val oldAck = serverAckedOurNum
             serverAckedOurNum = inst.ackNum
             retransmitCount = 0 // server got our data, reset backoff
+            logger.d(TAG, "Server acked our state: $oldAck → ${inst.ackNum}")
         }
 
         // Always advance remoteStateNum so our acks stay current with the
@@ -154,6 +163,10 @@ class MoshTransport(
         // keeps sending diffs we can't use, causing a permanent stall.
         if (inst.newNum > remoteStateNum) {
             if (inst.hasDiff() && !inst.diff.isEmpty) {
+                if (!firstOutputReceived) {
+                    firstOutputReceived = true
+                    logger.d(TAG, "First terminal output received (newNum=${inst.newNum}, diffSize=${inst.diff.size()}, packets sent=$packetsSent received=$packetsReceived)")
+                }
                 try {
                     val hostMsg = Hostinput.HostMessage.parseFrom(inst.diff, extensionRegistry)
                     for (hi in hostMsg.instructionList) {
@@ -243,6 +256,10 @@ class MoshTransport(
                 .setDiff(com.google.protobuf.ByteString.copyFrom(diff))
                 .build()
             connection?.sendInstruction(instruction) ?: return
+            packetsSent++
+            if (packetsSent == 1L) {
+                logger.d(TAG, "Sent initial packet: newNum=$currentNum ackNum=$remoteStateNum diffSize=${diff.size}")
+            }
             lastSendTimeMs = System.currentTimeMillis()
             lastAckSent = remoteStateNum
 
