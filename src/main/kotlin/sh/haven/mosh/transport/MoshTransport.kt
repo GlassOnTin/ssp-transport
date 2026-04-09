@@ -49,10 +49,14 @@ class MoshTransport(
     @Volatile private var connection: MoshConnection? = null
 
     // SSP state tracking
-    @Volatile private var remoteStateNum: Long = 0    // latest state number received from server
+    private val receiveState = ReceiveState()         // guards client-side state advancement (#73)
     @Volatile private var serverAckedOurNum: Long = 0 // server's ack of our state
     @Volatile private var lastAckSent: Long = 0       // last ack we sent to server
     @Volatile private var lastSendTimeMs: Long = 0
+
+    /** Current state number from the server; updated only when a matching-base diff is applied. */
+    private val remoteStateNum: Long
+        get() = receiveState.num
 
     // Track whether we have genuinely new data vs just retransmitting
     @Volatile private var lastSentNewNum: Long = 0
@@ -161,37 +165,45 @@ class MoshTransport(
         }
 
         // Only apply diffs whose base matches our current state. The server's
-        // diff is a visual framebuffer update computed from oldNum → newNum using
-        // VT100 sequences. If we've already advanced past oldNum, applying the
-        // diff would re-write characters that are already on screen (doubling).
-        // The server will resend with the correct base once it receives our ack.
-        if (inst.newNum > remoteStateNum) {
-            if (inst.oldNum == remoteStateNum) {
-                if (inst.hasDiff() && !inst.diff.isEmpty) {
-                    if (!firstOutputReceived) {
-                        firstOutputReceived = true
-                        logger.d(TAG, "First terminal output received (newNum=${inst.newNum}, diffSize=${inst.diff.size()}, packets sent=$packetsSent received=$packetsReceived)")
-                    }
-                    try {
-                        val hostMsg = Hostinput.HostMessage.parseFrom(inst.diff, extensionRegistry)
-                        for (hi in hostMsg.instructionList) {
-                            if (hi.hasExtension(Hostinput.hostbytes)) {
-                                val hb = hi.getExtension(Hostinput.hostbytes)
-                                val bytes = hb.hoststring.toByteArray()
-                                onOutput(bytes, 0, bytes.size)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        logger.e(TAG, "Failed to decode HostMessage", e)
+        // diff is a VT100 rendering sequence computed from oldNum → newNum on
+        // the *server's* framebuffer. Feeding those bytes to termlib when it
+        // isn't at oldNum produces cumulative display corruption (the exact
+        // "cursor below the prompt / freezes after a few Returns" symptom
+        // reported on #73).
+        //
+        // receiveState.tryAdvance mirrors upstream mosh's Transport::recv()
+        // semantics: on base mismatch it returns false and leaves the state
+        // number alone. We must NOT lie about our state in subsequent acks
+        // (the prior implementation advanced the number anyway, which made
+        // the server throw away the exact states the client needed).
+        if (!receiveState.tryAdvance(inst.oldNum, inst.newNum)) {
+            if (inst.newNum > remoteStateNum) {
+                logger.d(
+                    TAG,
+                    "Skipping diff: oldNum=${inst.oldNum} ≠ remoteStateNum=$remoteStateNum " +
+                        "(newNum=${inst.newNum}) — waiting for retransmit with matching base",
+                )
+            }
+            return
+        }
+
+        // tryAdvance already committed the state number. Render the diff.
+        if (inst.hasDiff() && !inst.diff.isEmpty) {
+            if (!firstOutputReceived) {
+                firstOutputReceived = true
+                logger.d(TAG, "First terminal output received (newNum=${inst.newNum}, diffSize=${inst.diff.size()}, packets sent=$packetsSent received=$packetsReceived)")
+            }
+            try {
+                val hostMsg = Hostinput.HostMessage.parseFrom(inst.diff, extensionRegistry)
+                for (hi in hostMsg.instructionList) {
+                    if (hi.hasExtension(Hostinput.hostbytes)) {
+                        val hb = hi.getExtension(Hostinput.hostbytes)
+                        val bytes = hb.hoststring.toByteArray()
+                        onOutput(bytes, 0, bytes.size)
                     }
                 }
-                remoteStateNum = inst.newNum
-            } else {
-                // Base mismatch — skip diff but still advance state number so
-                // our acks tell the server where we are. The server will send
-                // a fresh diff from the correct base.
-                logger.d(TAG, "Skipping diff: oldNum=${inst.oldNum} ≠ remoteStateNum=$remoteStateNum (newNum=${inst.newNum})")
-                remoteStateNum = inst.newNum
+            } catch (e: Exception) {
+                logger.e(TAG, "Failed to decode HostMessage", e)
             }
         }
     }
