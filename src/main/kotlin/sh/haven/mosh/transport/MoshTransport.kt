@@ -187,6 +187,15 @@ class MoshTransport(
             return
         }
 
+        // Notify the send loop so it can ack the new state promptly.
+        // Without this, the send loop sleeps until its next keepalive
+        // (up to 3s), during which the server keeps computing diffs from
+        // the old acked state — all of which get skipped because the
+        // client's base has moved on. The cascade of skips causes
+        // terminal state divergence (e.g. DECCKM mode lost → arrow keys
+        // fail in Mutt). See #73.
+        inputNotify.trySend(Unit)
+
         // tryAdvance already committed the state number. Render the diff.
         if (inst.hasDiff() && !inst.diff.isEmpty) {
             if (!firstOutputReceived) {
