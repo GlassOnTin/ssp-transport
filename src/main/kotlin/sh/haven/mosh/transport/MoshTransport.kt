@@ -310,7 +310,17 @@ class MoshTransport(
         const val PROTOCOL_VERSION = 2
         const val SEND_MIN_INTERVAL_MS = 20L
         const val ACK_DELAY_MS = 20L
-        const val NETWORK_STALL_MS = 5000L
+        // Upstream mosh-client tolerates ~60s of network silence before
+        // declaring the server dead. Our stall detector used to fire at
+        // 5s, which is well inside mosh-server's natural quiet windows
+        // during a clean shell exit (between the last PTY output and
+        // mosh-server's next chaff packet there is routinely a 5-10s
+        // gap). That produced spurious socket rebinds exactly when the
+        // session was shutting down cleanly, cascading into the
+        // "Return doesn't fire after exit" symptom in issue #92. 30s
+        // keeps us responsive to real interface loss without racing
+        // mosh-server's shutdown path.
+        const val NETWORK_STALL_MS = 30000L
         const val KEEPALIVE_INTERVAL_MS = 3000L
         const val RECV_TIMEOUT_MS = 250
     }

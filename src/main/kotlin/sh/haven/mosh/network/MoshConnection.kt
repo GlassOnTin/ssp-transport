@@ -34,8 +34,14 @@ class MoshConnection(
 
     private val serverAddr = InetAddress.getByName(serverIp)
     private val serverPort = port
-    // Use unconnected socket to avoid Android propagating ICMP errors as exceptions
+    // Use unconnected socket to avoid Android propagating ICMP errors as exceptions.
+    // @Volatile so the receive loop sees a rebind performed on another thread
+    // without needing its own synchronization, and the rebind itself is
+    // serialized under socketLock so a concurrent send never observes a
+    // half-closed / half-created socket.
+    @Volatile
     private var socket = DatagramSocket()
+    private val socketLock = Any()
 
     private var sendNonceSeq = 0L
     private var fragmentIdCounter = 0
@@ -106,7 +112,12 @@ class MoshConnection(
         // Encrypt with client→server direction
         val nonceVal = DIRECTION_TO_SERVER or sendNonceSeq++
         val packet = crypto.encrypt(nonceVal, plaintext)
-        socket.send(DatagramPacket(packet, packet.size, serverAddr, serverPort))
+        // Serialize with rebindSocket so we never send through a socket the
+        // rebind path has just closed. The lock is uncontended under normal
+        // operation (sends run back to back on one thread; rebinds are rare).
+        synchronized(socketLock) {
+            socket.send(DatagramPacket(packet, packet.size, serverAddr, serverPort))
+        }
     }
 
     /**
@@ -197,10 +208,25 @@ class MoshConnection(
      * Recreate the UDP socket to recover from network changes (IP roaming).
      * The old socket may be bound to a defunct interface; a fresh socket
      * binds to the current default route.
+     *
+     * Called from the send loop. The receive loop is normally blocked in
+     * `socket.receive()` on the old socket; closing it makes that call throw
+     * (typically `SocketException("Socket closed")`, which surfaces through
+     * the JNI layer as `recvfrom failed: EBADF`). The receive loop catches
+     * the exception, continues, and re-reads `this.socket` on the next
+     * iteration — which, because the field is @Volatile and the close →
+     * replace is serialized under [socketLock], is guaranteed to be the
+     * new socket.
+     *
+     * Concurrent sends during the swap are held on [socketLock] so a send
+     * never fires a packet into a socket the receive thread has just
+     * released. Under normal operation the lock is uncontended.
      */
     fun rebindSocket() {
-        try { socket.close() } catch (_: Exception) {}
-        socket = DatagramSocket()
+        synchronized(socketLock) {
+            try { socket.close() } catch (_: Exception) {}
+            socket = DatagramSocket()
+        }
     }
 
     override fun close() {
