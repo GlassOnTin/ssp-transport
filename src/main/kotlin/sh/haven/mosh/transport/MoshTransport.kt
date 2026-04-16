@@ -67,8 +67,9 @@ class MoshTransport(
     @Volatile private var packetsReceived: Long = 0
     @Volatile private var firstOutputReceived: Boolean = false
 
-    // Network roaming detection
+    // Network roaming / session-dead detection
     @Volatile private var lastReceiveTimeMs: Long = 0
+    @Volatile private var stallRebound = false
 
     // Conflated channel: wakes the send loop immediately when input arrives
     private val inputNotify = Channel<Unit>(Channel.CONFLATED)
@@ -141,6 +142,7 @@ class MoshTransport(
 
                 if (instruction == null) continue // timeout
                 lastReceiveTimeMs = System.currentTimeMillis()
+                stallRebound = false
                 processInstruction(instruction)
             }
         } catch (_: CancellationException) {
@@ -230,14 +232,24 @@ class MoshTransport(
                 val hasNewAck = remoteStateNum > lastAckSent
                 val needsRetransmit = currentNum > serverAckedOurNum
 
-                // Detect network stall: no packets received despite sending keepalives.
-                // The UDP socket is likely bound to a defunct interface after IP roaming.
-                // Recreate the socket so it binds to the current default route.
                 val recvAge = now - lastReceiveTimeMs
-                if (lastReceiveTimeMs > 0 && recvAge > NETWORK_STALL_MS) {
-                    logger.d(TAG, "No packets received for ${recvAge}ms, rebinding socket")
-                    connection?.rebindSocket()
-                    lastReceiveTimeMs = now // reset to avoid repeated rebinds
+                if (lastReceiveTimeMs > 0) {
+                    // Session-dead: mosh-server shuts down ~4s after shell exit
+                    // and stops sending packets. Detect this and tear down
+                    // instead of retransmitting into the void forever (#92).
+                    if (recvAge > SESSION_DEAD_MS) {
+                        logger.d(TAG, "Server unresponsive for ${recvAge}ms, disconnecting")
+                        close()
+                        onDisconnect?.invoke(true)
+                        return
+                    }
+                    // Network stall: rebind socket once for IP roaming recovery
+                    // before giving up at SESSION_DEAD_MS.
+                    if (recvAge > NETWORK_STALL_MS && !stallRebound) {
+                        logger.d(TAG, "No packets for ${recvAge}ms, rebinding socket")
+                        connection?.rebindSocket()
+                        stallRebound = true
+                    }
                 }
 
                 when {
@@ -310,17 +322,8 @@ class MoshTransport(
         const val PROTOCOL_VERSION = 2
         const val SEND_MIN_INTERVAL_MS = 20L
         const val ACK_DELAY_MS = 20L
-        // Upstream mosh-client tolerates ~60s of network silence before
-        // declaring the server dead. Our stall detector used to fire at
-        // 5s, which is well inside mosh-server's natural quiet windows
-        // during a clean shell exit (between the last PTY output and
-        // mosh-server's next chaff packet there is routinely a 5-10s
-        // gap). That produced spurious socket rebinds exactly when the
-        // session was shutting down cleanly, cascading into the
-        // "Return doesn't fire after exit" symptom in issue #92. 30s
-        // keeps us responsive to real interface loss without racing
-        // mosh-server's shutdown path.
-        const val NETWORK_STALL_MS = 30000L
+        const val NETWORK_STALL_MS = 10_000L
+        const val SESSION_DEAD_MS = 15_000L
         const val KEEPALIVE_INTERVAL_MS = 3000L
         const val RECV_TIMEOUT_MS = 250
     }
