@@ -322,8 +322,8 @@ class MoshTransport(
         const val PROTOCOL_VERSION = 2
         const val SEND_MIN_INTERVAL_MS = 20L
         const val ACK_DELAY_MS = 20L
-        const val NETWORK_STALL_MS = 10_000L
-        const val SESSION_DEAD_MS = 15_000L
+        const val NETWORK_STALL_MS = 6_000L
+        const val SESSION_DEAD_MS = 8_000L
         const val KEEPALIVE_INTERVAL_MS = 3000L
         const val RECV_TIMEOUT_MS = 250
     }
