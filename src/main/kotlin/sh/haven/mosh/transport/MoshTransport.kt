@@ -6,6 +6,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import com.google.protobuf.ExtensionRegistryLite
@@ -70,6 +73,12 @@ class MoshTransport(
     // Network roaming / session-dead detection
     @Volatile private var lastReceiveTimeMs: Long = 0
     @Volatile private var stallRebound = false
+
+    // Countdown surfaced to the UI when the server has gone silent.
+    // null while the connection is healthy or before the first packet arrives;
+    // otherwise the seconds remaining before [SESSION_DEAD_MS] fires the close.
+    private val _secondsUntilDisconnect = MutableStateFlow<Int?>(null)
+    val secondsUntilDisconnect: StateFlow<Int?> = _secondsUntilDisconnect.asStateFlow()
 
     // Conflated channel: wakes the send loop immediately when input arrives
     private val inputNotify = Channel<Unit>(Channel.CONFLATED)
@@ -143,6 +152,7 @@ class MoshTransport(
                 if (instruction == null) continue // timeout
                 lastReceiveTimeMs = System.currentTimeMillis()
                 stallRebound = false
+                _secondsUntilDisconnect.value = null
                 processInstruction(instruction)
             }
         } catch (_: CancellationException) {
@@ -234,11 +244,20 @@ class MoshTransport(
 
                 val recvAge = now - lastReceiveTimeMs
                 if (lastReceiveTimeMs > 0) {
+                    // Surface a countdown once we cross the stall threshold so
+                    // the UI can replace its silent unresponsive window with a
+                    // visible "closing in N s" indicator.
+                    _secondsUntilDisconnect.value = if (recvAge > STALL_DISPLAY_MS) {
+                        ((SESSION_DEAD_MS - recvAge + 999) / 1000).coerceAtLeast(0L).toInt()
+                    } else {
+                        null
+                    }
                     // Session-dead: mosh-server shuts down ~4s after shell exit
                     // and stops sending packets. Detect this and tear down
                     // instead of retransmitting into the void forever (#92).
                     if (recvAge > SESSION_DEAD_MS) {
                         logger.d(TAG, "Server unresponsive for ${recvAge}ms, disconnecting")
+                        _secondsUntilDisconnect.value = 0
                         close()
                         onDisconnect?.invoke(true)
                         return
@@ -322,6 +341,10 @@ class MoshTransport(
         const val PROTOCOL_VERSION = 2
         const val SEND_MIN_INTERVAL_MS = 20L
         const val ACK_DELAY_MS = 20L
+        /** Threshold after which the UI sees a non-null countdown — set above
+         *  [KEEPALIVE_INTERVAL_MS] (3s) so a single missed keepalive doesn't
+         *  flicker the indicator on a healthy connection. */
+        const val STALL_DISPLAY_MS = 4_000L
         const val NETWORK_STALL_MS = 6_000L
         const val SESSION_DEAD_MS = 8_000L
         const val KEEPALIVE_INTERVAL_MS = 3000L
